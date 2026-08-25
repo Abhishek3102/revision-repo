@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import type { Highlight, Note } from '../App';
-import { Highlighter, MessageSquarePlus, Eraser, Eye } from 'lucide-react';
+import { MessageSquarePlus, Eraser, Eye } from 'lucide-react';
 
 interface DocumentViewerProps {
   doc: { id: string; title: string; content: string };
@@ -160,13 +160,13 @@ export default function DocumentViewer({ doc, notes, highlights, onAddHighlight,
       
       // Replace highlight tokens with actual HTML
       const tokenRegex = /%%HS_([a-zA-Z0-9]+)_([^_]+)_([^%]+)%%(.*?)%%HE%%/g;
-      processedHtml = processedHtml.replace(tokenRegex, (match, id, bgColor, borderColor, text) => {
+      processedHtml = processedHtml.replace(tokenRegex, (_match, id, bgColor, borderColor, text) => {
         return `<span class="highlight-segment" data-id="${id}" style="background-color: ${bgColor}; border-bottom: 2px solid ${borderColor}; cursor: pointer; border-radius: 2px; padding: 0 2px;">${text}</span>`;
       });
       
       // Replace note tokens with actual HTML
       const noteTokenRegex = /%%NS_([a-zA-Z0-9]+)%%(.*?)%%NE%%/g;
-      processedHtml = processedHtml.replace(noteTokenRegex, (match, id, text) => {
+      processedHtml = processedHtml.replace(noteTokenRegex, (_match, id, text) => {
         return `<span class="note-segment" data-note-id="${id}" style="border-bottom: 2px dashed rgba(255, 255, 255, 0.7); text-underline-offset: 4px; padding-bottom: 2px; cursor: pointer;">${text}</span>`;
       });
 
