@@ -6,7 +6,6 @@ interface SidebarProps {
   data: Record<string, any[]>;
   isOpen: boolean;
   currentFolder: string;
-  currentFolder: string;
   currentDoc: string;
   onUpload: (file: File) => void;
 }
