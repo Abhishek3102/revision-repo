@@ -31,6 +31,7 @@ function MainLayout() {
   
   const [notes, setNotes] = useState<Note[]>([]);
   const [highlights, setHighlights] = useState<Highlight[]>([]);
+  const [uploadedDocs, setUploadedDocs] = useState<any[]>([]);
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -47,6 +48,11 @@ function MainLayout() {
       .then(res => res.json())
       .then(data => setHighlights(data))
       .catch(err => console.error('Error fetching highlights:', err));
+      
+    fetch(`${API_URL}/documents`)
+      .then(res => res.json())
+      .then(data => setUploadedDocs(data))
+      .catch(err => console.error('Error fetching docs:', err));
   }, []);
 
   // Handle Note actions
@@ -108,6 +114,19 @@ function MainLayout() {
     setMobileNavOpen(false);
   }, [location.pathname]);
 
+  // Merge static data with dynamic uploaded docs
+  const typedData = JSON.parse(JSON.stringify(data)) as Record<string, any[]>;
+  uploadedDocs.forEach(doc => {
+    const folder = doc.folder || 'Uploaded Documents';
+    if (!typedData[folder]) {
+      typedData[folder] = [];
+    }
+    // Avoid duplicates if same ID
+    if (!typedData[folder].find(d => d.id === doc.id)) {
+      typedData[folder].push(doc);
+    }
+  });
+
   // Determine current document based on URL
   const pathParts = location.pathname.split('/').filter(Boolean);
   const folderParam = pathParts[0] ? decodeURIComponent(pathParts[0]) : null;
@@ -115,20 +134,46 @@ function MainLayout() {
 
   let currentDoc = null;
   if (folderParam && docParam) {
-    const typedData = data as Record<string, any[]>;
     currentDoc = typedData[folderParam]?.find(d => d.id === docParam);
   }
 
   // Redirect to first doc if none selected
   useEffect(() => {
     if (!folderParam || !docParam) {
-       const typedData = data as Record<string, any[]>;
        const firstFolder = Object.keys(typedData)[0];
        if (firstFolder && typedData[firstFolder].length > 0) {
          navigate(`/${encodeURIComponent(firstFolder)}/${encodeURIComponent(typedData[firstFolder][0].id)}`);
        }
     }
-  }, [folderParam, docParam, navigate]);
+  }, [folderParam, docParam, navigate, typedData]);
+
+  // Handle Document Upload
+  const handleUpload = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const content = e.target?.result as string;
+      const newDoc = {
+        id: file.name + '-' + Date.now(),
+        title: file.name,
+        content: content,
+        folder: 'Uploaded Documents'
+      };
+      
+      try {
+        const res = await fetch(`${API_URL}/documents`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(newDoc)
+        });
+        const savedDoc = await res.json();
+        setUploadedDocs([...uploadedDocs, savedDoc]);
+        navigate(`/${encodeURIComponent(savedDoc.folder)}/${encodeURIComponent(savedDoc.id)}`);
+      } catch (err) {
+        console.error('Error uploading doc:', err);
+      }
+    };
+    reader.readAsText(file);
+  };
 
   return (
     <div className="app-container">
@@ -144,10 +189,11 @@ function MainLayout() {
 
       {/* Sidebars */}
       <Sidebar 
-        data={data} 
+        data={typedData} 
         isOpen={mobileNavOpen} 
         currentFolder={folderParam || ''}
         currentDoc={docParam || ''}
+        onUpload={handleUpload}
       />
       
       <NotesSidebar 

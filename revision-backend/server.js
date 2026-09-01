@@ -45,6 +45,14 @@ const highlightSchema = new mongoose.Schema({
 const Note = mongoose.model('Note', noteSchema, 'notes'); // collection name 'notes'
 const Highlight = mongoose.model('Highlight', highlightSchema, 'highlights'); // collection name 'highlights'
 
+const documentSchema = new mongoose.Schema({
+  id: String,
+  title: String,
+  content: String,
+  folder: { type: String, default: 'Uploaded Documents' }
+});
+const Document = mongoose.model('Document', documentSchema, 'documents');
+
 // --- API ROUTES ---
 
 // GET all notes
@@ -104,6 +112,27 @@ app.delete('/api/highlights/:id', async (req, res) => {
   try {
     await Highlight.deleteOne({ id: req.params.id });
     res.json({ message: 'Deleted successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET all documents
+app.get('/api/documents', async (req, res) => {
+  try {
+    const docs = await Document.find();
+    res.json(docs);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST a new document
+app.post('/api/documents', async (req, res) => {
+  try {
+    const newDoc = new Document(req.body);
+    await newDoc.save();
+    res.json(newDoc);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
