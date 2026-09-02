@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import type { Highlight, Note } from '../App';
-import { MessageSquarePlus, Eraser, Eye } from 'lucide-react';
+import { MessageSquarePlus, Eraser, Eye, Search, X, ChevronUp, ChevronDown, Sparkles, Wand2 } from 'lucide-react';
 
 interface DocumentViewerProps {
   doc: { id: string; title: string; content: string };
@@ -10,15 +10,39 @@ interface DocumentViewerProps {
   onRemoveHighlight: (id: string) => void;
   onAddNote: (text: string, quote?: string) => void;
   onOpenNotes: () => void;
+  onOpenAI: () => void;
+  onExplainSelection: (text: string) => void;
 }
 
-export default function DocumentViewer({ doc, notes, highlights, onAddHighlight, onRemoveHighlight, onAddNote, onOpenNotes }: DocumentViewerProps) {
+export default function DocumentViewer({ doc, notes, highlights, onAddHighlight, onRemoveHighlight, onAddNote, onOpenNotes, onOpenAI, onExplainSelection }: DocumentViewerProps) {
   const [selection, setSelection] = useState<{ text: string; rect: DOMRect } | null>(null);
   const [activeHighlightId, setActiveHighlightId] = useState<{ id: string; rect: DOMRect } | null>(null);
   const [isNoteModalOpen, setIsNoteModalOpen] = useState(false);
   const [noteText, setNoteText] = useState("");
   const [pendingNoteQuote, setPendingNoteQuote] = useState("");
+  const [progress, setProgress] = useState(0);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState('');
+  const [findIdx, setFindIdx] = useState(0);
   const contentRef = useRef<HTMLDivElement>(null);
+  const findInputRef = useRef<HTMLInputElement>(null);
+
+  const words = (doc.content || '').split(/\s+/).filter(Boolean).length;
+  const readMins = Math.max(1, Math.round(words / 200));
+
+  // Reading progress bar
+  useEffect(() => {
+    const onScroll = () => {
+      const el = contentRef.current;
+      if (!el) return;
+      const total = el.scrollHeight - window.innerHeight;
+      const scrolled = Math.min(Math.max(-el.getBoundingClientRect().top, 0), total);
+      setProgress(total > 0 ? (scrolled / total) * 100 : 0);
+    };
+    window.addEventListener('scroll', onScroll, true);
+    onScroll();
+    return () => window.removeEventListener('scroll', onScroll, true);
+  }, [doc]);
 
   // Handle Text Selection
   useEffect(() => {
@@ -114,6 +138,49 @@ export default function DocumentViewer({ doc, notes, highlights, onAddHighlight,
     }
   };
 
+  // Find (Ctrl+F) helpers
+  const computeMatches = (content: string, q: string) => {
+    const lower = q.trim().toLowerCase();
+    if (!lower) return 0;
+    const hay = content.toLowerCase();
+    let count = 0, i = 0;
+    while ((i = hay.indexOf(lower, i)) !== -1) { count++; i += lower.length; }
+    return count;
+  };
+  const findTotal = computeMatches(doc.content, findQuery);
+
+  const goFind = (delta: number) => {
+    if (findTotal === 0) return;
+    setFindIdx(i => ((i + delta) % findTotal + findTotal) % findTotal);
+  };
+
+  // Keyboard shortcuts for search / navigation
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        setFindOpen(true);
+        setTimeout(() => findInputRef.current?.select(), 0);
+      }
+      if (e.key === 'Enter' && findOpen) {
+        e.preventDefault();
+        goFind(e.shiftKey ? -1 : 1);
+      }
+      if (e.key === 'Escape' && findOpen) {
+        setFindOpen(false);
+        setFindQuery('');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [findOpen, findTotal]);
+
+  // Scroll current find match into view
+  useEffect(() => {
+    const el = contentRef.current?.querySelector<HTMLElement>('.find-hit.current');
+    el?.scrollIntoView({ block: 'center' });
+  }, [findIdx]);
+
   // Render text with highlights
   const renderHighlightedContent = () => {
     let content = doc.content;
@@ -151,12 +218,26 @@ export default function DocumentViewer({ doc, notes, highlights, onAddHighlight,
     content = content.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
     
     const paragraphs = content.split('\n');
+    let absCount = 0;
+    const findLower = findQuery.trim().toLowerCase();
+    const findEscaped = findLower.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
 
     return paragraphs.map((para, idx) => {
       const trimmedPara = para.trim();
       if (!trimmedPara) return null;
       
       let processedHtml = trimmedPara;
+
+      // Wrap find matches (before token substitution so they also cover highlighted text)
+      if (findLower) {
+        const findRegex = new RegExp(`(${findEscaped})`, 'gi');
+        processedHtml = processedHtml.replace(findRegex, (m) => {
+          const isCurrent = absCount === findIdx;
+          const idxNow = absCount;
+          absCount++;
+          return `<mark class="find-hit${isCurrent ? ' current' : ''}" data-find-index="${idxNow}">${m}</mark>`;
+        });
+      }
       
       // Replace highlight tokens with actual HTML
       const tokenRegex = /%%HS_([a-zA-Z0-9]+)_([^_]+)_([^%]+)%%(.*?)%%HE%%/g;
@@ -167,7 +248,7 @@ export default function DocumentViewer({ doc, notes, highlights, onAddHighlight,
       // Replace note tokens with actual HTML
       const noteTokenRegex = /%%NS_([a-zA-Z0-9]+)%%(.*?)%%NE%%/g;
       processedHtml = processedHtml.replace(noteTokenRegex, (_match, id, text) => {
-        return `<span class="note-segment" data-note-id="${id}" style="border-bottom: 2px dashed rgba(255, 255, 255, 0.7); text-underline-offset: 4px; padding-bottom: 2px; cursor: pointer;">${text}</span>`;
+        return `<span class="note-segment" data-note-id="${id}" style="border-bottom: 2px dashed var(--text-secondary); text-underline-offset: 4px; padding-bottom: 2px; cursor: pointer;">${text}</span>`;
       });
 
       if (trimmedPara.startsWith('### ')) return <h3 key={idx} dangerouslySetInnerHTML={{__html: processedHtml.substring(4)}} />;
@@ -199,9 +280,20 @@ export default function DocumentViewer({ doc, notes, highlights, onAddHighlight,
 
   return (
     <div className="document-viewer">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
+      {/* Reading progress bar */}
+      <div className="reading-progress" aria-hidden="true">
+        <div className="reading-progress-bar" style={{ width: `${progress}%` }} />
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
         <h1 style={{ marginBottom: 0 }}>{doc.title.replace(/\.[^/.]+$/, "")}</h1>
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
+        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <button className="btn btn-secondary" onClick={() => { setFindOpen(v => !v); setFindQuery(''); }} title="Find in page (Ctrl+F)">
+            <Search size={18} /> Find
+          </button>
+          <button className="btn btn-secondary" onClick={onOpenAI} title="AI Study Tools">
+            <Sparkles size={18} /> AI
+          </button>
           <button className="btn btn-secondary" onClick={onOpenNotes}>
             <Eye size={18} /> Notes ({notes.length})
           </button>
@@ -210,6 +302,29 @@ export default function DocumentViewer({ doc, notes, highlights, onAddHighlight,
           </button>
         </div>
       </div>
+
+      {findOpen && (
+        <div className="find-bar glass">
+          <Search size={15} className="find-icon" />
+          <input
+            ref={findInputRef}
+            className="find-input"
+            placeholder="Find in this document…"
+            value={findQuery}
+            onChange={e => { setFindQuery(e.target.value); setFindIdx(0); }}
+            onKeyDown={e => {
+              if (e.key === 'Enter') { e.preventDefault(); goFind(e.shiftKey ? -1 : 1); }
+            }}
+          />
+          <span className="find-count">{findQuery ? (findTotal ? `${findIdx + 1}/${findTotal}` : '0/0') : ''}</span>
+          <button className="find-btn" onClick={() => goFind(-1)} title="Previous (Shift+Enter)"><ChevronUp size={16} /></button>
+          <button className="find-btn" onClick={() => goFind(1)} title="Next (Enter)"><ChevronDown size={16} /></button>
+          <button className="find-btn" onClick={() => { setFindOpen(false); setFindQuery(''); }} title="Close (Esc)"><X size={16} /></button>
+        </div>
+      )}
+      <p className="reading-stats">
+        {words.toLocaleString()} words · about {readMins} min read
+      </p>
 
       <div ref={contentRef} className="document-content glass" style={{ padding: '2rem', borderRadius: '12px' }} onClick={handleContentClick}>
         {renderHighlightedContent()}
@@ -237,6 +352,14 @@ export default function DocumentViewer({ doc, notes, highlights, onAddHighlight,
             setNoteText(`Regarding: "${selection.text}"\n\n`);
           }}>
             <MessageSquarePlus size={16} color="var(--text-primary)" /> Note
+          </button>
+          <button className="toolbar-btn ai-toolbar-btn" onClick={(e) => { 
+            e.preventDefault(); 
+            onExplainSelection(selection.text);
+            setSelection(null);
+            window.getSelection()?.removeAllRanges();
+          }}>
+            <Wand2 size={16} /> Explain
           </button>
         </div>
       )}

@@ -3,8 +3,11 @@ import { BrowserRouter as Router, Routes, Route, useNavigate, useLocation } from
 import Sidebar from './components/Sidebar';
 import DocumentViewer from './components/DocumentViewer';
 import NotesSidebar from './components/NotesSidebar';
+import CommandPalette from './components/CommandPalette';
+import OnboardingModal from './components/OnboardingModal';
+import AIPanel from './components/AIPanel';
 import data from './data.json';
-import { Menu, BookOpen } from 'lucide-react';
+import { Menu, BookOpen, Loader2, X, Wand2 } from 'lucide-react';
 import './index.css';
 
 // Types
@@ -14,6 +17,7 @@ export interface Note {
   timestamp: number;
   docId: string;
   quote?: string;
+  tags?: string[];
 }
 
 export interface Highlight {
@@ -34,6 +38,21 @@ function MainLayout() {
   const [uploadedDocs, setUploadedDocs] = useState<any[]>([]);
   const location = useLocation();
   const navigate = useNavigate();
+
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    const saved = localStorage.getItem('rh-theme');
+    return saved === 'light' ? 'light' : 'dark';
+  });
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [onboardOpen, setOnboardOpen] = useState(false);
+  const [recent, setRecent] = useState<{ folder: string; doc: any }[]>(() => {
+    try { return JSON.parse(localStorage.getItem('rh-recent') || '[]'); } catch { return []; }
+  });
+  const [editDoc, setEditDoc] = useState<{ doc: any; folder: string } | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  const [explain, setExplain] = useState<{ text: string; answer: string; loading: boolean } | null>(null);
+  const [uploadNotice, setUploadNotice] = useState('');
 
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
@@ -114,6 +133,49 @@ function MainLayout() {
     setMobileNavOpen(false);
   }, [location.pathname]);
 
+  // Apply theme to <html> when it changes
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('rh-theme', theme);
+  }, [theme]);
+
+  // Show onboarding on first visit
+  useEffect(() => {
+    if (!localStorage.getItem('rh-onboarded')) {
+      setOnboardOpen(true);
+    }
+  }, []);
+
+  // Ctrl/Cmd + K opens the command palette
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setPaletteOpen(v => !v);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // Record recently viewed documents
+  useEffect(() => {
+    const parts = location.pathname.split('/').filter(Boolean);
+    if (parts.length >= 2) {
+      const folder = decodeURIComponent(parts[0]);
+      const docId = decodeURIComponent(parts[1]);
+      const folders = JSON.parse(JSON.stringify(data)) as Record<string, any[]>;
+      const doc = folders[folder]?.find((d: any) => d.id === docId);
+      if (doc) {
+        setRecent(prev => {
+          const next = [{ folder, doc }, ...prev.filter(r => r.doc.id !== docId)].slice(0, 5);
+          localStorage.setItem('rh-recent', JSON.stringify(next));
+          return next;
+        });
+      }
+    }
+  }, [location.pathname]);
+
   // Merge static data with dynamic uploaded docs
   const typedData = JSON.parse(JSON.stringify(data)) as Record<string, any[]>;
   uploadedDocs.forEach(doc => {
@@ -147,32 +209,107 @@ function MainLayout() {
     }
   }, [folderParam, docParam, navigate, typedData]);
 
-  // Handle Document Upload
-  const handleUpload = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      const content = e.target?.result as string;
-      const newDoc = {
-        id: file.name + '-' + Date.now(),
-        title: file.name,
-        content: content,
-        folder: 'Uploaded Documents'
+  // Handle Document Upload (multiple files)
+  const handleUploadFiles = (files: File[]) => {
+    const textFiles = files.filter(f => /\.(txt|md|markdown)$/i.test(f.name));
+    const skipped = files.length - textFiles.length;
+    if (skipped > 0) {
+      setUploadNotice(`${skipped} file(s) skipped — only .txt and .md are previewable right now.`);
+      setTimeout(() => setUploadNotice(''), 5000);
+    }
+    textFiles.forEach(file => {
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        const content = e.target?.result as string;
+        const newDoc = {
+          id: file.name + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+          title: file.name,
+          content: content,
+          folder: 'Uploaded Documents'
+        };
+        try {
+          const res = await fetch(`${API_URL}/documents`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(newDoc)
+          });
+          const savedDoc = await res.json();
+          setUploadedDocs(prev => [...prev, savedDoc]);
+        } catch (err) {
+          console.error('Error uploading doc:', err);
+        }
       };
-      
-      try {
-        const res = await fetch(`${API_URL}/documents`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(newDoc)
-        });
-        const savedDoc = await res.json();
-        setUploadedDocs([...uploadedDocs, savedDoc]);
-        navigate(`/${encodeURIComponent(savedDoc.folder)}/${encodeURIComponent(savedDoc.id)}`);
-      } catch (err) {
-        console.error('Error uploading doc:', err);
-      }
-    };
-    reader.readAsText(file);
+      reader.readAsText(file);
+    });
+  };
+
+  // Rename a document
+  const openRename = (doc: any, folder: string) => {
+    setEditDoc({ doc, folder });
+    setEditTitle(doc.title);
+  };
+  const submitRename = async () => {
+    if (!editDoc || !editTitle.trim()) return;
+    const newTitle = editTitle.trim();
+    const updated = { ...editDoc.doc, title: newTitle };
+    setUploadedDocs(prev => prev.map(d => d.id === editDoc.doc.id ? updated : d));
+    try {
+      await fetch(`${API_URL}/documents/${editDoc.doc.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: newTitle })
+      });
+    } catch (err) {
+      console.error('Error renaming doc:', err);
+    }
+    setEditDoc(null);
+    // Refresh current view if we renamed the open document
+    setUploadedDocs(prev => prev.slice());
+  };
+
+  // Delete a document
+  const handleDeleteDoc = async (doc: any, _folder: string) => {
+    const ok = window.confirm(`Delete "${doc.title.replace(/\.[^/.]+$/, "")}"? Its notes & highlights will also be removed.`);
+    if (!ok) return;
+    setUploadedDocs(prev => prev.filter(d => d.id !== doc.id));
+    try {
+      await fetch(`${API_URL}/documents/${doc.id}`, { method: 'DELETE' });
+    } catch (err) {
+      console.error('Error deleting doc:', err);
+    }
+    if (docParam === doc.id) {
+      navigate('/');
+    }
+  };
+
+  // Update a note (tags) — optimistic + persisted
+  const updateNote = async (updated: Note) => {
+    setNotes(prev => prev.map(n => n.id === updated.id ? updated : n));
+    try {
+      await fetch(`${API_URL}/notes/${updated.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tags: updated.tags })
+      });
+    } catch (err) {
+      console.error('Error updating note:', err);
+    }
+  };
+
+  // Explain selected text with AI
+  const handleExplain = async (text: string) => {
+    setExplain({ text, answer: '', loading: true });
+    try {
+      const res = await fetch(`${API_URL}/ai/explain`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text })
+      });
+      const data = await res.json().catch(() => ({}));
+      setExplain(prev => prev ? { ...prev, answer: data.answer || (data.error || 'AI is not configured on the backend.'), loading: false } : prev);
+    } catch (err) {
+      setExplain(prev => prev ? { ...prev, answer: 'Could not reach the AI service.', loading: false } : prev);
+    }
   };
 
   return (
@@ -193,7 +330,14 @@ function MainLayout() {
         isOpen={mobileNavOpen} 
         currentFolder={folderParam || ''}
         currentDoc={docParam || ''}
-        onUpload={handleUpload}
+        onUploadFiles={handleUploadFiles}
+        onRenameDoc={openRename}
+        onDeleteDoc={handleDeleteDoc}
+        recent={recent}
+        theme={theme}
+        onToggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+        onOpenPalette={() => setPaletteOpen(true)}
+        onAskAI={() => { if (currentDoc) setAiPanelOpen(true); else alert('Open a document first to use AI tools.'); }}
       />
       
       <NotesSidebar 
@@ -203,6 +347,8 @@ function MainLayout() {
         onClose={() => setNotesOpen(false)}
         onDeleteNote={deleteNote}
         onDeleteHighlight={deleteHighlight}
+        onUpdateNote={updateNote}
+        apiUrl={API_URL}
       />
 
       {/* Main Content */}
@@ -216,13 +362,78 @@ function MainLayout() {
             onRemoveHighlight={deleteHighlight}
             onAddNote={(text, quote) => addNote(currentDoc.id, text, quote)}
             onOpenNotes={() => setNotesOpen(true)}
+            onOpenAI={() => setAiPanelOpen(true)}
+            onExplainSelection={handleExplain}
           />
         ) : (
-          <div style={{display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center'}}>
+          <div style={{display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '0.75rem'}}>
              <h2>Select a document to begin revision</h2>
+             <p style={{ color: 'var(--text-secondary)' }}>Press Ctrl+K to search, or upload a document.</p>
           </div>
         )}
       </main>
+
+      {/* Upload notice */}
+      {uploadNotice && <div className="upload-notice">{uploadNotice}</div>}
+
+      {/* Command palette */}
+      <CommandPalette
+        open={paletteOpen}
+        data={typedData}
+        onClose={() => setPaletteOpen(false)}
+        onSelect={(folder, docId) => navigate(`/${encodeURIComponent(folder)}/${encodeURIComponent(docId)}`)}
+      />
+
+      {/* Onboarding */}
+      <OnboardingModal
+        open={onboardOpen}
+        onClose={() => { setOnboardOpen(false); localStorage.setItem('rh-onboarded', '1'); }}
+      />
+
+      {/* AI Panel */}
+      <AIPanel open={aiPanelOpen} apiUrl={API_URL} doc={currentDoc} onClose={() => setAiPanelOpen(false)} />
+
+      {/* Explain selection modal */}
+      {explain && (
+        <div className="modal-overlay" onClick={() => setExplain(null)}>
+          <div className="modal-content ai-panel" onClick={e => e.stopPropagation()}>
+            <div className="onboarding-head">
+              <h3 className="modal-title"><Wand2 size={18} style={{ marginRight: '0.5rem', verticalAlign: 'middle' }} /> Explain</h3>
+              <button aria-label="Close" onClick={() => setExplain(null)} style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                <X size={20} />
+              </button>
+            </div>
+            <blockquote className="ai-quote">&ldquo;{explain.text}&rdquo;</blockquote>
+            {explain.loading ? (
+              <p style={{ color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Loader2 size={16} className="spin" /> Explaining…
+              </p>
+            ) : (
+              <p className="ai-summary" style={{ whiteSpace: 'pre-wrap' }}>{explain.answer}</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Rename modal */}
+      {editDoc && (
+        <div className="modal-overlay" onClick={() => setEditDoc(null)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <h3 className="modal-title">Rename document</h3>
+            <input
+              className="modal-input"
+              value={editTitle}
+              onChange={e => setEditTitle(e.target.value)}
+              autoFocus
+              onKeyDown={e => { if (e.key === 'Enter') submitRename(); }}
+            />
+            <div className="modal-actions">
+              <button className="btn btn-secondary" onClick={() => setEditDoc(null)}>Cancel</button>
+              <button className="btn btn-primary" onClick={submitRename}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
