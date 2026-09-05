@@ -9,6 +9,10 @@ import AIPanel from './components/AIPanel';
 import data from './data.json';
 import { Menu, BookOpen, Loader2, X, Wand2 } from 'lucide-react';
 import './index.css';
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 // Types
 export interface Note {
@@ -209,18 +213,38 @@ function MainLayout() {
     }
   }, [folderParam, docParam, navigate, typedData]);
 
+  // Extract text from a PDF file using pdf.js
+  const extractPdfText = async (file: File): Promise<string> => {
+    const buffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+    const pages: string[] = [];
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const textContent = await page.getTextContent();
+      pages.push(textContent.items.map((item: any) => item.str).join(' '));
+    }
+    return pages.join('\n\n');
+  };
+
   // Handle Document Upload (multiple files)
   const handleUploadFiles = (files: File[]) => {
-    const textFiles = files.filter(f => /\.(txt|md|markdown)$/i.test(f.name));
-    const skipped = files.length - textFiles.length;
+    const supported = files.filter(f => /\.(txt|md|markdown|pdf)$/i.test(f.name));
+    const skipped = files.length - supported.length;
     if (skipped > 0) {
-      setUploadNotice(`${skipped} file(s) skipped — only .txt and .md are previewable right now.`);
+      setUploadNotice(`${skipped} file(s) skipped — only .txt, .md and .pdf are supported right now.`);
       setTimeout(() => setUploadNotice(''), 5000);
     }
-    textFiles.forEach(file => {
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-        const content = e.target?.result as string;
+    supported.forEach(file => {
+      const processFile = async () => {
+        let content: string;
+        try {
+          content = /\.pdf$/i.test(file.name) ? await extractPdfText(file) : await file.text();
+        } catch (err) {
+          console.error('Could not read file:', err);
+          setUploadNotice(`Could not read ${file.name} — it may be corrupted or password-protected.`);
+          setTimeout(() => setUploadNotice(''), 5000);
+          return;
+        }
         const newDoc = {
           id: file.name + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
           title: file.name,
@@ -233,13 +257,19 @@ function MainLayout() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(newDoc)
           });
+          if (!res.ok) {
+            const detail = await res.text().catch(() => '');
+            throw new Error(`HTTP ${res.status} ${detail.slice(0, 120)}`);
+          }
           const savedDoc = await res.json();
           setUploadedDocs(prev => [...prev, savedDoc]);
         } catch (err) {
           console.error('Error uploading doc:', err);
+          setUploadNotice(`Upload failed for ${file.name}: ${err instanceof Error ? err.message : 'network error'}`);
+          setTimeout(() => setUploadNotice(''), 8000);
         }
       };
-      reader.readAsText(file);
+      processFile();
     });
   };
 
