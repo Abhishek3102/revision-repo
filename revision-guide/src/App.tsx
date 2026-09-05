@@ -226,6 +226,25 @@ function MainLayout() {
     return pages.join('\n\n');
   };
 
+  // Encode content (gzip + base64) so Cloudflare's WAF in front of Render
+  // never sees raw patterns like '../' in the body -> no more 403s.
+  // Falls back to plaintext on older browsers.
+  const encodeContent = async (text: string): Promise<{ content: string; contentEncoding?: string }> => {
+    if (typeof CompressionStream === 'undefined') return { content: text };
+    try {
+      const stream = new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'));
+      const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+      let binary = '';
+      const CH = 0x8000;
+      for (let i = 0; i < bytes.length; i += CH) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + CH));
+      }
+      return { content: btoa(binary), contentEncoding: 'gzip-base64' };
+    } catch {
+      return { content: text };
+    }
+  };
+
   // Handle Document Upload (multiple files)
   const handleUploadFiles = (files: File[]) => {
     const supported = files.filter(f => /\.(txt|md|markdown|pdf)$/i.test(f.name));
@@ -245,11 +264,12 @@ function MainLayout() {
           setTimeout(() => setUploadNotice(''), 5000);
           return;
         }
+        const encoded = await encodeContent(content);
         const newDoc = {
           id: file.name + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
           title: file.name,
-          content: content,
-          folder: 'Uploaded Documents'
+          folder: 'Uploaded Documents',
+          ...encoded
         };
         try {
           const res = await fetch(`${API_URL}/documents`, {

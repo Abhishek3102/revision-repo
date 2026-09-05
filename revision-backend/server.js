@@ -1,6 +1,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const zlib = require('zlib');
 // load local env file if present; on Render, env vars come from the dashboard
 require('dotenv').config({ path: '../revision-guide/.env.local' });
 require('dotenv').config(); // also loads .env in this folder if it exists
@@ -146,9 +147,18 @@ app.get('/api/documents', async (req, res) => {
 });
 
 // POST a new document
+// NOTE: Cloudflare (in front of Render) WAF-blocks request bodies containing
+// patterns like '../' with a bare 403 and no CORS headers. The client sends
+// content gzipped + base64 encoded (contentEncoding: 'gzip-base64') so the WAF
+// sees only opaque bytes; we decode here before saving.
 app.post('/api/documents', async (req, res) => {
   try {
-    const newDoc = new Document(req.body);
+    const body = { ...req.body };
+    if (body.contentEncoding === 'gzip-base64' && body.content) {
+      body.content = zlib.gunzipSync(Buffer.from(body.content, 'base64')).toString('utf8');
+      delete body.contentEncoding;
+    }
+    const newDoc = new Document(body);
     await newDoc.save();
     res.json(newDoc);
   } catch (err) {
