@@ -1,11 +1,13 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+// load local env file if present; on Render, env vars come from the dashboard
 require('dotenv').config({ path: '../revision-guide/.env.local' });
+require('dotenv').config(); // also loads .env in this folder if it exists
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' })); // default was 100kb -> big md uploads failed with 413/403
 
 // MongoDB Connection
 const MONGODB_URI = process.env.MONGODB_URI;
